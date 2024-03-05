@@ -261,16 +261,19 @@ class QLinear(nn.Linear):
     A quantized linear layer for PyTorch.
     """
 
-    def __init__(self, in_features, out_features, bias=True, num_bits=None, is_cyclic_precision=False, num_cyclic_period=1, cyclic_num_bits_schedule=(4, 8)):
+    def __init__(self, in_features, out_features, bias=True, num_bits=None, is_cyclic_precision=False, num_cyclic_period=None, cyclic_num_bits_schedule=None, log_every=None):
         super(QLinear, self).__init__(in_features, out_features, bias)
 
         self.quantize_input = QuantMeasure(shape_measure=(1, 1), flatten_dims=(1, -1))
         self.num_bits = num_bits
-        self.forward_iters = 0
 
         self.is_cyclic_precision = is_cyclic_precision
-        self.num_cyclic_period = num_cyclic_period
-        self.cyclic_num_bits_schedule = cyclic_num_bits_schedule
+
+        if self.is_cyclic_precision:
+            self.forward_iters = 0
+            self.num_cyclic_period = num_cyclic_period
+            self.cyclic_num_bits_schedule = cyclic_num_bits_schedule
+            self.log_every = log_every
 
     def forward(self, input):
         """
@@ -284,9 +287,12 @@ class QLinear(nn.Linear):
             Quantized output tensor.
         """
         if self.is_cyclic_precision:
-            cyclic_period = int(self.forward_iters / self.num_cyclic_period)
-            if cyclic_period != 0:
-                self.cyclic_adjust_precision(cyclic_period)
+            self.cyclic_adjust_precision(self.num_cyclic_period)
+            # cyclic_period = int(self.forward_iters / self.num_cyclic_period)
+            # if cyclic_period != 0:
+            #     self.cyclic_adjust_precision(cyclic_period)
+            # else:
+            #     self.cyclic_adjust_precision(1)
         
             self.forward_iters += 1
 
@@ -309,8 +315,30 @@ class QLinear(nn.Linear):
 
         return output
 
+    def linear_quant_act(self, input, act_fn=torch.nn.functional.relu):
+        """
+        Performs quantized linear transformation followed by activation.
+
+        Args:
+            input: Input tensor.
+            act_fn: Activation function to apply (default: ReLU).
+
+        Returns:
+            Quantized output tensor with activation applied.
+        """
+
+        output = self.forward(input)  # Perform quantized linear transformation
+
+        # Quantize activations (assuming you have a 'quantize_act' function)
+        if self.num_bits is not None and self.num_bits > 0:
+            q_output = self.quantize_act(output, num_bits=self.num_bits)
+        else:
+            q_output = output
+
+        # Apply activation function
+        return act_fn(q_output)
+
     def cyclic_adjust_precision(self, cyclic_period):
-        logger.warning(f"ITER {self.forward_iters} | CYCLIC PERIOD {cyclic_period}")
         assert len(eval(self.cyclic_num_bits_schedule)) == 2
         
         num_bit_min, num_bit_max = eval(self.cyclic_num_bits_schedule)
@@ -318,10 +346,16 @@ class QLinear(nn.Linear):
         self.num_bits = np.rint(num_bit_min +
                                 0.5 * (num_bit_max - num_bit_min) *
                                 (1 + np.cos(np.pi * ((self.forward_iters % cyclic_period) / cyclic_period) + np.pi)))
+        
+        if self.forward_iters % self.log_every == 0:
+            logger.info('Iter [{}] num_bits = {} cyclic precision'.format(self.forward_iters, self.num_bits))
 
-        logging.info('Iter [{}] num_bits = {} cyclic precision'.format(self.forward_iters, self.num_bits))
+def reset_forward_iters(model):
+    for name, module in model.named_modules():
+        if 'encoder' in name and isinstance(module, QLinear):
+            module.forward_iters = 0
 
-def quantize_model(model, num_bits, device='cpu', exclude=None, num_cyclic_period=None, cyclic_num_bits_schedule=None):
+def quantize_model(model, num_bits, device='cpu', exclude=None, is_cyclic_precision=False, num_cyclic_period=None, cyclic_num_bits_schedule=None, log_every=None):
     """
     Quantizes weights and activations of Linear layers in a PyTorch model.
 
@@ -364,7 +398,7 @@ def quantize_model(model, num_bits, device='cpu', exclude=None, num_cyclic_perio
     for name, quantized_weight, quantized_bias in to_be_quantized:
         if 'encoder' in name: # only quantize encoder
             layer_to_replace, last_attr_name = get_layer_to_replace(model, name.split('.'))
-            setattr(layer_to_replace, last_attr_name, QLinear(quantized_weight.size(0), quantized_weight.size(1), num_bits=num_bits, num_cyclic_period=num_cyclic_period, cyclic_num_bits_schedule=cyclic_num_bits_schedule))
+            setattr(layer_to_replace, last_attr_name, QLinear(quantized_weight.size(0), quantized_weight.size(1), num_bits=num_bits, is_cyclic_precision=is_cyclic_precision, num_cyclic_period=num_cyclic_period, cyclic_num_bits_schedule=cyclic_num_bits_schedule, log_every=log_every))
 
             new_layer = get_layer(model, name.split('.'))
             new_layer.weight.data = quantized_weight

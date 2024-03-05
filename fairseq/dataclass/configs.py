@@ -1138,6 +1138,10 @@ class QuantizationConfig(FairseqDataclass):
         default=3,
         metadata={"help": "cycle period (epochs)"},
     )
+    log_every: Optional[int] = field(
+        default=20,
+        metadata={"help": "how often to log"},
+    )
 
 @dataclass
 class FairseqConfig(FairseqDataclass):

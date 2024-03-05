@@ -31,7 +31,7 @@ from fairseq.nan_detector import NanDetector
 from fairseq.optim import lr_scheduler
 from fairseq.utils import safe_hasattr
 
-from .quantize import quantize_model, QLinear
+from .quantize import quantize_model, QLinear, reset_forward_iters
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +103,6 @@ class Trainer(object):
         self._model = model
 
         if self.cfg.quantization.is_cyclic_precision:
-            # logger.warning(eval(self.cfg.quantization.cyclic_num_bits_schedule))
-            # logger.warning(type(eval(self.cfg.quantization.cyclic_num_bits_schedule)))
             logger.info("INITIALIZING VARIABLES FOR MODEL QUANTIZATION...")
             num_bit_min, num_bit_max = eval(self.cfg.quantization.cyclic_num_bits_schedule)
             self.num_bits = num_bit_min
@@ -112,16 +110,12 @@ class Trainer(object):
                 model,
                 num_bits=self.num_bits,
                 device='cuda',
+                is_cyclic_precision=self.cfg.quantization.is_cyclic_precision,
                 num_cyclic_period=self.cfg.quantization.num_cyclic_period,
-                cyclic_num_bits_schedule=self.cfg.quantization.cyclic_num_bits_schedule
+                cyclic_num_bits_schedule=self.cfg.quantization.cyclic_num_bits_schedule,
+                log_every=self.cfg.quantization.log_every
             )
-            logger.info(f"INITIAL MODEL QUANTIZED! {self.num_bits}-bits")
-
-            # tmp_epoch = 0
-            # cyclic_period = int((tmp_epoch + 1) / self.cfg.quantization.num_cyclic_period)
-            # self.cyclic_adjust_precision(tmp_epoch + 1, cyclic_period)
-            # self._model = quantize_model(model, num_bits=self.num_bits, device='cuda')
-            # logger.warning(f"MODEL QUANTIZED! {self.num_bits}-bits")
+            logger.info(f"INITIAL MODEL QUANTIZED! {self.num_bits}-bits, {self.cfg.quantization.is_cyclic_precision}, {self.cfg.quantization.num_cyclic_period}, {self.cfg.quantization.cyclic_num_bits_schedule}")
         ###########################################################
 
         if not self.is_fsdp:
@@ -804,14 +798,8 @@ class Trainer(object):
             self.quantizer.begin_epoch(epoch)
 
         # #################### QUANTIZATION EDITS ####################
-        # if self.cfg.quantization.is_cyclic_precision:
-        #     logger.warning(f"BEGIN QUANTIZING MODEL: EPOCH {epoch}...")
-
-        #     cyclic_period = int(epoch / self.cfg.quantization.num_cyclic_period)
-        #     self.cyclic_adjust_precision(epoch, cyclic_period)
-
-        #     self._model = quantize_model(self._model, num_bits=self.num_bits, device='cuda')
-        #     logger.warning(f"MODEL QUANTIZED: EPOCH {epoch}! {self.num_bits}-bits")
+        if self.cfg.quantization.is_cyclic_precision:
+            reset_forward_iters(self._model)
         # ###########################################################
 
         # task specific setup per epoch
