@@ -15,6 +15,7 @@ import time
 from argparse import Namespace
 from itertools import chain
 from typing import Any, Dict, List
+import numpy as np
 
 import torch
 from omegaconf import OmegaConf
@@ -29,6 +30,8 @@ from fairseq.models.ema import build_ema
 from fairseq.nan_detector import NanDetector
 from fairseq.optim import lr_scheduler
 from fairseq.utils import safe_hasattr
+
+from .quantize import quantize_model, QLinear
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +98,32 @@ class Trainer(object):
 
         # copy model and criterion to current device/dtype
         self._criterion = criterion
+
+        #################### QUANTIZATION EDITS ####################
         self._model = model
+
+        if self.cfg.quantization.is_cyclic_precision:
+            # logger.warning(eval(self.cfg.quantization.cyclic_num_bits_schedule))
+            # logger.warning(type(eval(self.cfg.quantization.cyclic_num_bits_schedule)))
+            logger.info("INITIALIZING VARIABLES FOR MODEL QUANTIZATION...")
+            num_bit_min, num_bit_max = eval(self.cfg.quantization.cyclic_num_bits_schedule)
+            self.num_bits = num_bit_min
+            self._model = quantize_model(
+                model,
+                num_bits=self.num_bits,
+                device='cuda',
+                num_cyclic_period=self.cfg.quantization.num_cyclic_period,
+                cyclic_num_bits_schedule=self.cfg.quantization.cyclic_num_bits_schedule
+            )
+            logger.info(f"INITIAL MODEL QUANTIZED! {self.num_bits}-bits")
+
+            # tmp_epoch = 0
+            # cyclic_period = int((tmp_epoch + 1) / self.cfg.quantization.num_cyclic_period)
+            # self.cyclic_adjust_precision(tmp_epoch + 1, cyclic_period)
+            # self._model = quantize_model(model, num_bits=self.num_bits, device='cuda')
+            # logger.warning(f"MODEL QUANTIZED! {self.num_bits}-bits")
+        ###########################################################
+
         if not self.is_fsdp:
             if cfg.common.fp16:
                 assert not cfg.common.amp, "Cannot use fp16 and AMP together"
@@ -583,13 +611,13 @@ class Trainer(object):
                     logger.info(self.model)
 
                 self.model.load_state_dict(
-                    state["model"], strict=True, model_cfg=self.cfg.model
+                    state["model"], strict=False, model_cfg=self.cfg.model
                 )
                 # save memory for later steps
                 del state["model"]
                 if utils.has_parameters(self.get_criterion()):
                     self.get_criterion().load_state_dict(
-                        state["criterion"], strict=True
+                        state["criterion"], strict=False
                     )
                     del state["criterion"]
 
@@ -775,6 +803,17 @@ class Trainer(object):
         if self.quantizer is not None:
             self.quantizer.begin_epoch(epoch)
 
+        # #################### QUANTIZATION EDITS ####################
+        # if self.cfg.quantization.is_cyclic_precision:
+        #     logger.warning(f"BEGIN QUANTIZING MODEL: EPOCH {epoch}...")
+
+        #     cyclic_period = int(epoch / self.cfg.quantization.num_cyclic_period)
+        #     self.cyclic_adjust_precision(epoch, cyclic_period)
+
+        #     self._model = quantize_model(self._model, num_bits=self.num_bits, device='cuda')
+        #     logger.warning(f"MODEL QUANTIZED: EPOCH {epoch}! {self.num_bits}-bits")
+        # ###########################################################
+
         # task specific setup per epoch
         self.task.begin_epoch(epoch, self.get_model())
 
@@ -809,7 +848,6 @@ class Trainer(object):
         extra_kwargs = {}
         if self.cfg.ema.store_ema and getattr(self.task, "uses_ema", False):
             extra_kwargs["ema_model"] = self.ema.get_model()
-
         has_oom = False
 
         # forward and backward pass

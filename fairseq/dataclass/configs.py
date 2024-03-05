@@ -1123,6 +1123,21 @@ class EMAConfig(FairseqDataclass):
         metadata={"help": "If true, store EMA model in fp32 even if model is in fp16"},
     )
 
+@dataclass
+class QuantizationConfig(FairseqDataclass):
+    is_cyclic_precision: bool = field(
+        default=False,
+        metadata={
+            "help": "enable/disable cyclic precision training"
+        },
+    )
+    cyclic_num_bits_schedule: Any = field(
+        default=(4, 8), metadata={"help": "lower bit range to higher bit range"}
+    )
+    num_cyclic_period: Optional[int] = field(
+        default=3,
+        metadata={"help": "cycle period (epochs)"},
+    )
 
 @dataclass
 class FairseqConfig(FairseqDataclass):
@@ -1145,3 +1160,4 @@ class FairseqConfig(FairseqDataclass):
     bpe: Any = None
     tokenizer: Any = None
     ema: EMAConfig = EMAConfig()
+    quantization: QuantizationConfig = QuantizationConfig()

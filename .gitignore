@@ -1,3 +1,7 @@
+# glue data bins
+*-bin/
+glue_data/
+
 # JetBrains PyCharm IDE
 .idea/
 
